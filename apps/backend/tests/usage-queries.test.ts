@@ -5,7 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import s from '../src/db/abstractSchema';
 import { db } from '../src/db/db';
 import { getMessagesUsage, getTotalUsage } from '../src/queries/usage.queries';
-import { formatDate } from '../src/utils/date';
+import { formatDate, resolvePeriodAndGranularity } from '../src/utils/date';
 
 vi.mock('../src/db/db', async () => {
 	const { default: Database } = await import('better-sqlite3');
@@ -175,5 +175,39 @@ describe('usage query results', () => {
 			outputTotalTokens: 5,
 			totalTokens: 45,
 		});
+	});
+
+	it('supports flexible time periods (30d, 60d, 90d, 6m)', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-08-28T12:00:00.000Z'));
+		try {
+			const records30d = await getMessagesUsage(PROJECT_ID, { period: '30d' });
+			expect(records30d).toHaveLength(30);
+
+			const records60d = await getMessagesUsage(PROJECT_ID, { period: '60d' });
+			expect(records60d).toHaveLength(60);
+
+			const records90d = await getMessagesUsage(PROJECT_ID, { period: '90d' });
+			expect(records90d).toHaveLength(90);
+
+			const records6m = await getMessagesUsage(PROJECT_ID, { period: '6m' });
+			expect(records6m).toHaveLength(6);
+			const currentMonth = formatDate(new Date(), 'month');
+			expect(records6m.map((r) => r.date)).toContain(currentMonth);
+
+			// Diverging period and granularity
+			const records6mDaily = await getMessagesUsage(PROJECT_ID, { period: '6m', granularity: 'day' });
+			expect(records6mDaily.length).toBeGreaterThan(150);
+
+			// Verify UTC bucket boundaries do not produce extra buckets regardless of time of day
+			const afternoonTime = new Date('2026-08-28T16:45:00.000Z');
+			const resolvedAfternoon = resolvePeriodAndGranularity({ period: '6m', granularity: 'day' }, afternoonTime);
+			const morningTime = new Date('2026-08-28T02:15:00.000Z');
+			const resolvedMorning = resolvePeriodAndGranularity({ period: '6m', granularity: 'day' }, morningTime);
+			expect(resolvedAfternoon.count).toBe(resolvedMorning.count);
+			expect(resolvedAfternoon.startDate.toISOString()).toBe(resolvedMorning.startDate.toISOString());
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
